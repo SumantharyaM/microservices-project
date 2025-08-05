@@ -1,0 +1,66 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_HUB_CREDENTIALS = credentials('docker-hub-credentials') // Jenkins Credentials ID
+        DOCKER_HUB_USERNAME = 'your-docker-username'                    // Replace this
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Build User Service') {
+            steps {
+                dir('user-service') {
+                    sh 'mvn clean package -DskipTests'
+                    sh "docker build -t $DOCKER_HUB_USERNAME/user-service:latest ."
+                }
+            }
+        }
+
+        stage('Build Product Service') {
+            steps {
+                dir('product-service') {
+                    sh 'mvn clean package -DskipTests'
+                    sh "docker build -t $DOCKER_HUB_USERNAME/product-service:latest ."
+                }
+            }
+        }
+
+        stage('Build Order Service') {
+            steps {
+                dir('order-service') {
+                    sh 'mvn clean package -DskipTests'
+                    sh "docker build -t $DOCKER_HUB_USERNAME/order-service:latest ."
+                }
+            }
+        }
+
+        stage('Docker Login') {
+            steps {
+                sh "echo $DOCKER_HUB_CREDENTIALS_PSW | docker login -u $DOCKER_HUB_USERNAME --password-stdin"
+            }
+        }
+
+        stage('Push Images to Docker Hub') {
+            steps {
+                sh "docker push $DOCKER_HUB_USERNAME/user-service:latest"
+                sh "docker push $DOCKER_HUB_USERNAME/product-service:latest"
+                sh "docker push $DOCKER_HUB_USERNAME/order-service:latest"
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "✅ Build and Docker Push Successful!"
+        }
+        failure {
+            echo "❌ Build or Docker Push Failed!"
+        }
+    }
+}
