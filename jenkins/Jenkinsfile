@@ -2,11 +2,11 @@ pipeline {
     agent any
 
     environment {
-        DOCKERHUB_CREDENTIALS_ID = 'dockerhub-credentials-id'
-        AWS_CREDENTIALS_ID = 'aws-eks-credentials'
-        DOCKERHUB_USERNAME = 'sumantharya'
-        AWS_REGION = 'ap-south-1'
-        CLUSTER_NAME = 'eks-cluster-sumanth'
+        DOCKERHUB_CREDENTIALS_ID = 'dockerhub-credentials-id'     // Jenkins credential ID for DockerHub
+        AWS_CREDENTIALS_ID = 'aws-eks-credentials'                 // Jenkins AWS access key credential ID
+        DOCKERHUB_USERNAME = 'sumantharya'                         // Your DockerHub username
+        AWS_REGION = 'ap-south-1'                                  // Your AWS region
+        CLUSTER_NAME = 'eks-cluster-sumanth'                       // New EKS cluster name to be created
     }
 
     tools {
@@ -73,7 +73,7 @@ pipeline {
                     def services = ['user-service', 'product-service', 'order-service']
                     for (svc in services) {
                         sh """
-                            echo "🔍 Scanning ${svc}..."
+                            echo "🔍 Scanning ${svc} for vulnerabilities..."
                             trivy image --exit-code 0 --severity HIGH,CRITICAL ${DOCKERHUB_USERNAME}/${svc}:latest
                         """
                     }
@@ -86,20 +86,14 @@ pipeline {
                 withCredentials([usernamePassword(credentialsId: "${AWS_CREDENTIALS_ID}", usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
                     script {
                         sh """
-                            echo "🔧 Creating EKS cluster..."
+                            echo "🔧 Configuring AWS CLI..."
                             aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
                             aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
                             aws configure set region ${AWS_REGION}
-                            
-                            eksctl create cluster --name ${CLUSTER_NAME} \
-                                --region ${AWS_REGION} \
-                                --nodes 2 \
-                                --node-type t3.medium \
-                                --managed \
-                                --with-oidc \
-                                --tags project=jenkins-deploy
 
-                            echo "✅ Cluster ${CLUSTER_NAME} created."
+                            echo "🚀 Creating EKS cluster if not exists..."
+                            eksctl get cluster --region ${AWS_REGION} --name ${CLUSTER_NAME} || \
+                            eksctl create cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} --nodes 2 --node-type t3.medium --managed
                         """
                     }
                 }
@@ -132,11 +126,5 @@ pipeline {
         always {
             sh 'docker logout || true'
         }
-        // Optional: Remove or configure SMTP if you want email notifications
-        // failure {
-        //     mail to: 'sumantharya1@gmail.com',
-        //          subject: "❌ Jenkins Build Failed: ${env.JOB_NAME} [#${env.BUILD_NUMBER}]",
-        //          body: "Check Jenkins logs for failure details at ${env.BUILD_URL}"
-        // }
     }
 }
