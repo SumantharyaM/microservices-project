@@ -1,0 +1,122 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials-id')     // Docker Hub credentials in Jenkins
+        AWS_CREDENTIALS = credentials('aws-eks-credentials')                 // AWS access key credentials in Jenkins
+        DOCKERHUB_USERNAME = 'sumantharya'
+        AWS_REGION = 'ap-south-1'
+        CLUSTER_NAME = 'eks-cluster-sumanth'
+    }
+
+    tools {
+        jdk 'JDK17' // Make sure Jenkins has this JDK installed and named
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Build & Package') {
+            steps {
+                script {
+                    def services = ['user-service', 'product-service', 'order-service']
+                    for (svc in services) {
+                        dir(svc) {
+                            sh 'mvn clean package -DskipTests'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Build Docker Images') {
+            steps {
+                script {
+                    def services = ['user-service', 'product-service', 'order-service']
+                    for (svc in services) {
+                        dir(svc) {
+                            sh """
+                            docker build -t ${DOCKERHUB_USERNAME}/${svc}:latest .
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Push Docker Images') {
+            steps {
+                script {
+                    sh "echo ${DOCKERHUB_CREDENTIALS_PSW} | docker login -u ${DOCKERHUB_USERNAME} --password-stdin"
+                    def services = ['user-service', 'product-service', 'order-service']
+                    for (svc in services) {
+                        sh "docker push ${DOCKERHUB_USERNAME}/${svc}:latest"
+                    }
+                }
+            }
+        }
+
+        stage('Trivy Vulnerability Scan') {
+            steps {
+                script {
+                    def services = ['user-service', 'product-service', 'order-service']
+                    for (svc in services) {
+                        sh """
+                        echo "🔍 Scanning ${svc}..."
+                        trivy image --exit-code 0 --severity HIGH,CRITICAL ${DOCKERHUB_USERNAME}/${svc}:latest
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to EKS') {
+            steps {
+                script {
+                    withEnv([
+                        "AWS_ACCESS_KEY_ID=${AWS_CREDENTIALS_USR}",
+                        "AWS_SECRET_ACCESS_KEY=${AWS_CREDENTIALS_PSW}"
+                    ]) {
+                        sh """
+                        echo "🔧 Creating EKS Cluster..."
+                        eksctl create cluster \
+                          --name ${CLUSTER_NAME} \
+                          --region ${AWS_REGION} \
+                          --nodegroup-name standard-workers \
+                          --node-type t3.medium \
+                          --nodes 2 \
+                          --nodes-min 1 \
+                          --nodes-max 3 \
+                          --managed
+
+                        echo "🔁 Updating kubeconfig..."
+                        aws eks --region ${AWS_REGION} update-kubeconfig --name ${CLUSTER_NAME}
+
+                        echo "🚀 Applying Kubernetes manifests..."
+                        kubectl apply -f k8s-common/
+                        kubectl apply -f user-service/k8s/
+                        kubectl apply -f product-service/k8s/
+                        kubectl apply -f order-service/k8s/
+                        """
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            sh 'docker logout'
+        }
+        failure {
+            mail to: 'sumantharya1@gmail.com',
+                 subject: "❌ Jenkins Build Failed: ${currentBuild.fullDisplayName}",
+                 body: "Check Jenkins logs for failure details."
+        }
+    }
+}
+
