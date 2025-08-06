@@ -80,24 +80,11 @@ pipeline {
             steps {
                 withAWS(credentials: "${AWS_CREDENTIALS_ID}", region: "${AWS_REGION}") {
                     script {
-                        def clusterExists = sh(
-                            script: "eksctl get cluster --region ${AWS_REGION} --name ${CLUSTER_NAME} > /dev/null 2>&1",
-                            returnStatus: true
-                        ) == 0
-
-                        if (!clusterExists) {
-                            echo "Creating EKS cluster: ${CLUSTER_NAME}"
-                            sh """
-                                eksctl create cluster \
-                                --name ${CLUSTER_NAME} \
-                                --region ${AWS_REGION} \
-                                --nodes 2 \
-                                --node-type t3.medium \
-                                --managed
-                            """
-                        } else {
-                            echo "EKS cluster '${CLUSTER_NAME}' already exists. Skipping creation."
-                        }
+                        sh """
+                            echo "Checking if EKS cluster exists..."
+                            eksctl get cluster --region ${AWS_REGION} --name ${CLUSTER_NAME} || \
+                            eksctl create cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} --nodes 2 --node-type t3.medium --managed
+                        """
                     }
                 }
             }
@@ -107,13 +94,19 @@ pipeline {
             steps {
                 withAWS(credentials: "${AWS_CREDENTIALS_ID}", region: "${AWS_REGION}") {
                     script {
-                        sh """
-                            aws eks --region ${AWS_REGION} update-kubeconfig --name ${CLUSTER_NAME}
-                            kubectl apply -f k8s-common/
-                            kubectl apply -f user-service/k8s/
-                            kubectl apply -f product-service/k8s/
-                            kubectl apply -f order-service/k8s/
-                        """
+                        sh '''
+                        echo "Updating kubeconfig for EKS cluster..."
+                        aws eks --region ap-south-1 update-kubeconfig --name eks-cluster-sumanth
+
+                        echo "Applying Kubernetes manifests for order-service..."
+                        kubectl apply -f order-service/k8s/
+
+                        echo "Applying Kubernetes manifests for product-service..."
+                        kubectl apply -f product-service/k8s/
+
+                        echo "Applying Kubernetes manifests for user-service..."
+                        kubectl apply -f user-service/k8s/
+                        '''
                     }
                 }
             }
@@ -126,3 +119,4 @@ pipeline {
         }
     }
 }
+
