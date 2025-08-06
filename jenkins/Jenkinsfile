@@ -2,65 +2,114 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_HUB_CREDENTIALS = credentials('docker-hub-credentials') // Jenkins Credentials ID
-        DOCKER_HUB_USERNAME = 'your-docker-username'                    // Replace this
+        DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials-id')     // Docker Hub credentials
+        AWS_CREDENTIALS = credentials('aws-eks-credentials')                // AWS access key credentials
+        DOCKERHUB_USERNAME = 'sumantharya'
+        AWS_REGION = 'ap-south-1'
+        CLUSTER_NAME = 'eks-cluster-sumanth'
+    }
+
+    tools {
+        jdk 'JDK17' // Ensure Jenkins has this installed
     }
 
     stages {
-        stage('Checkout') {
+
+        stage('Clone') {
             steps {
-                checkout scm
+                git(
+                    url: 'https://github.com/SumantharyaM/microservices-project.git',
+                    branch: 'main',
+                    credentialsId: 'github-creds'
+                )
             }
         }
 
-        stage('Build User Service') {
+        stage('Build & Package') {
             steps {
-                dir('user-service') {
-                    sh 'mvn clean package -DskipTests'
-                    sh "docker build -t $DOCKER_HUB_USERNAME/user-service:latest ."
+                script {
+                    def services = ['user-service', 'product-service', 'order-service']
+                    for (svc in services) {
+                        dir(svc) {
+                            sh 'mvn clean package -DskipTests'
+                        }
+                    }
                 }
             }
         }
 
-        stage('Build Product Service') {
+        stage('Build Docker Images') {
             steps {
-                dir('product-service') {
-                    sh 'mvn clean package -DskipTests'
-                    sh "docker build -t $DOCKER_HUB_USERNAME/product-service:latest ."
+                script {
+                    def services = ['user-service', 'product-service', 'order-service']
+                    for (svc in services) {
+                        dir(svc) {
+                            sh """
+                            docker build -t ${DOCKERHUB_USERNAME}/${svc}:latest .
+                            """
+                        }
+                    }
                 }
             }
         }
 
-        stage('Build Order Service') {
+        stage('Push Docker Images') {
             steps {
-                dir('order-service') {
-                    sh 'mvn clean package -DskipTests'
-                    sh "docker build -t $DOCKER_HUB_USERNAME/order-service:latest ."
+                script {
+                    sh "echo ${DOCKERHUB_CREDENTIALS_PSW} | docker login -u ${DOCKERHUB_USERNAME} --password-stdin"
+                    def services = ['user-service', 'product-service', 'order-service']
+                    for (svc in services) {
+                        sh "docker push ${DOCKERHUB_USERNAME}/${svc}:latest"
+                    }
                 }
             }
         }
 
-        stage('Docker Login') {
+        stage('Trivy Vulnerability Scan') {
             steps {
-                sh "echo $DOCKER_HUB_CREDENTIALS_PSW | docker login -u $DOCKER_HUB_USERNAME --password-stdin"
+                script {
+                    def services = ['user-service', 'product-service', 'order-service']
+                    for (svc in services) {
+                        sh """
+                        echo "🔍 Scanning ${svc}..."
+                        trivy image --exit-code 0 --severity HIGH,CRITICAL ${DOCKERHUB_USERNAME}/${svc}:latest
+                        """
+                    }
+                }
             }
         }
 
-        stage('Push Images to Docker Hub') {
+        stage('Deploy to EKS') {
             steps {
-                sh "docker push $DOCKER_HUB_USERNAME/user-service:latest"
-                sh "docker push $DOCKER_HUB_USERNAME/product-service:latest"
-                sh "docker push $DOCKER_HUB_USERNAME/order-service:latest"
+                script {
+                    withEnv([
+                        "AWS_ACCESS_KEY_ID=${AWS_CREDENTIALS_USR}",
+                        "AWS_SECRET_ACCESS_KEY=${AWS_CREDENTIALS_PSW}"
+                    ]) {
+                        sh """
+                        echo "🔁 Updating kubeconfig..."
+                        aws eks --region ${AWS_REGION} update-kubeconfig --name ${CLUSTER_NAME}
+
+                        echo "🚀 Applying Kubernetes manifests..."
+                        kubectl apply -f k8s-common/
+                        kubectl apply -f user-service/k8s/
+                        kubectl apply -f product-service/k8s/
+                        kubectl apply -f order-service/k8s/
+                        """
+                    }
+                }
             }
         }
     }
 
     post {
-        success {
-            echo "✅ Build and Docker Push Successful!"
+        always {
+            sh 'docker logout'
         }
         failure {
-            echo "❌ Build or Docker Push Failed!"
+            mail to: 'sumantharya1@gmail.com',
+                 subject: "❌ Jenkins Build Failed: ${currentBuild.fullDisplayName}",
+                 body: "Check Jenkins logs for failure details."
         }
     }
 }
